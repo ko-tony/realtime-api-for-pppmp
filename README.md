@@ -18,6 +18,7 @@ PPPMP 廣告使用的公開附屬資料 API，提供天氣、空氣品質及台�
 | `aqi`、`pm25`、`o3` | moenv | 測站維修時為 `null` |
 | `aqiDate` | moenv | 環境部發布時間 |
 | `airTemperature`、`humidity`、`uvIndex`、`weather` | cwa | |
+| `maxTemperature`、`minTemperature` | cwa | 測站當日截至觀測時間的最高／最低溫（攝氏），缺測為 `null` |
 | `weatherDate` | cwa | 測站觀測時間 |
 
 兩個時間欄位都是 `timestamptz`，回傳帶 `+08:00` 偏移。兩表縣市名格式不同（`臺北市` / `臺北`），JOIN 時以 `replace(cityName, '市', '')` 對齊。
@@ -35,6 +36,8 @@ PPPMP 廣告使用的公開附屬資料 API，提供天氣、空氣品質及台�
 | `get-twse-finance-live` | 證交所 getChartOhlcStatis | `finance_live` |
 
 `config.py` 負責環境變數，`db.py` 提供共用的 `upsert_rows()`。新增第三個資料源時，準備好表名與欄位順序即可直接呼叫，不需再寫一次 SQL。
+
+最高／最低溫取自 CWA `WeatherElement.DailyExtreme.DailyHigh/DailyLow.TemperatureInfo.AirTemperature`，是當日觀測極值。部署擷取程式與公開 API 前，先以資料表擁有者執行 [`cloudrun/cwa-uv-live.sql`](cloudrun/cwa-uv-live.sql) 新增兩個欄位；既有資料等下次擷取成功後補值。欄位與缺測代碼見 [CWA 資料標準](https://opendata.cwa.gov.tw/opendatadoc/Observation/O-A0003-001.pdf)。
 
 ### 環境變數
 

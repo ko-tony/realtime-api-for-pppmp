@@ -1,4 +1,5 @@
 import logging
+import math
 
 import functions_framework
 import requests
@@ -10,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001"
-
+# 可以查天氣高低溫！
 # 測站代號 -> 對外縣市名。桃園沒有市區測站，用新屋站代表。
 STATIONS = {
     "466920": "臺北",
@@ -22,14 +23,17 @@ STATIONS = {
 }
 STATION_NAME_OVERRIDES = {"新屋": "桃園"}
 
-COLUMNS = ("cityName", "uvIndex", "airTemperature", "date", "weather", "humidity")
+COLUMNS = (
+    "cityName", "uvIndex", "airTemperature", "date", "weather", "humidity",
+    "maxTemperature", "minTemperature",
+)
 
 
 def _fetch() -> list[dict]:
     params = {
         "Authorization": required("CWA_API_TOKEN"),
         "StationId": ",".join(STATIONS),
-        "WeatherElement": "Weather,AirTemperature,UVIndex,RelativeHumidity",
+        "WeatherElement": "Weather,AirTemperature,UVIndex,RelativeHumidity,DailyHigh,DailyLow",
         "GeoInfo": "StationAltitude",
     }
     response = requests.get(URL, params=params, timeout=HTTP_TIMEOUT_SECONDS)
@@ -42,6 +46,19 @@ def _fetch() -> list[dict]:
     return payload["records"]["Station"]
 
 
+def _daily_temperature(elements: dict, extreme: str) -> float | None:
+    """當日截至觀測時間的極值（攝氏）；缺測或儀器故障回傳 None。"""
+    value = (
+        elements.get("DailyExtreme", {}).get(extreme, {})
+        .get("TemperatureInfo", {}).get("AirTemperature")
+    )
+    try:
+        temperature = float(value)
+    except (TypeError, ValueError):
+        return None
+    return temperature if math.isfinite(temperature) and temperature != -99 else None
+
+
 def _to_row(station: dict) -> tuple:
     name = station["StationName"]
     elements = station["WeatherElement"]
@@ -52,6 +69,8 @@ def _to_row(station: dict) -> tuple:
         station["ObsTime"]["DateTime"],
         elements["Weather"],
         elements["RelativeHumidity"],
+        _daily_temperature(elements, "DailyHigh"),
+        _daily_temperature(elements, "DailyLow"),
     )
 
 

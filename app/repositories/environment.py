@@ -17,6 +17,8 @@ def list_environment(db: Session) -> list[Row]:
             models.MoenvLive.o3.label("o3"),
             models.MoenvLive.date.label("aqiDate"),
             models.CwaUvLive.airTemperature.label("airTemperature"),
+            models.CwaUvLive.maxTemperature.label("maxTemperature"),
+            models.CwaUvLive.minTemperature.label("minTemperature"),
             models.CwaUvLive.humidity.label("humidity"),
             models.CwaUvLive.uvIndex.label("uvIndex"),
             models.CwaUvLive.weather.label("weather"),

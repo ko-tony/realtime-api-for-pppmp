@@ -15,6 +15,8 @@ class EnvironmentResponse(BaseModel):
     o3: int | float | None
     aqiDate: datetime | None
     airTemperature: float | None
+    maxTemperature: float | None
+    minTemperature: float | None
     humidity: int | None
     uvIndex: int | None
     weather: str | None

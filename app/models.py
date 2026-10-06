@@ -11,6 +11,8 @@ class CwaUvLive(Base):
 
     cityName: Mapped[str] = mapped_column(String, primary_key=True)
     airTemperature: Mapped[float | None] = mapped_column(Float)
+    maxTemperature: Mapped[float | None] = mapped_column(Float)
+    minTemperature: Mapped[float | None] = mapped_column(Float)
     uvIndex: Mapped[int | None] = mapped_column(Integer)
     date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     weather: Mapped[str | None] = mapped_column(String)
