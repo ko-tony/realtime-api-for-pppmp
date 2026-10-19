@@ -120,16 +120,36 @@ env/bin/python -m uvicorn main:app --reload
 
 ## 素材確認轉發（預設關閉）
 
-選用的 `POST /api/v1/creative/view` 僅轉交確認紀錄；不會讀取或下載 `url` 指向的素材。既有 environment/finance GET 與 CORS 契約維持原樣。此入口不依賴 PostgreSQL，且不列入目前公開 GET API 的 OpenAPI 清單。
+兩個獨立入口：
+
+- 正式：`POST /api/v1/creative/view` → `CREATIVE_RELAY_PRIVATE_IP` / `CREATIVE_RELAY_HOSTNAME`。
+- beta：`POST /api/v1/beta/creative/view` → `CREATIVE_RELAY_BETA_PRIVATE_IP` / `CREATIVE_RELAY_BETA_HOSTNAME`。
+
+兩邊轉交至各自 CMS 的 `/api/v1/creative/view`，不依素材 URL 或客戶端參數選擇目的地，不互相 fallback。
+
+選用的轉發入口僅轉交確認紀錄；不會讀取或下載 `url` 指向的素材。既有 environment/finance GET 與 CORS 契約維持原樣。此入口不依賴 PostgreSQL，且不列入目前公開 GET API 的 OpenAPI 清單。
 
 | 環境變數 | 設定 |
 | --- | --- |
-| `CREATIVE_RELAY_ENABLED` | 預設 `false`；僅 `true` 啟用 |
-| `CREATIVE_RELAY_PRIVATE_IP` | 必填：目標 cms VM 的 RFC1918 IPv4，勿填公網 IP |
-| `CREATIVE_RELAY_HOSTNAME` | 必填：與該 VM Nginx 站台及有效憑證相符的裸網域，例如 `beta-cms-api.me-pppmp.com`，不含 scheme/path |
+| `CREATIVE_RELAY_ENABLED` | 共用開關，預設 `false`；僅 `true` 啟用 |
+| `CREATIVE_RELAY_PRIVATE_IP` | 啟用時必填：正式 cms VM 的 RFC1918 IPv4，勿填公網 IP |
+| `CREATIVE_RELAY_HOSTNAME` | 啟用時必填：正式站台及憑證對應的裸網域，例如 `cms-api.me-pppmp.com`，不含 scheme/path |
+| `CREATIVE_RELAY_BETA_PRIVATE_IP` | 選用：beta cms VM 的 RFC1918 IPv4，須與 beta hostname 一起設定 |
+| `CREATIVE_RELAY_BETA_HOSTNAME` | 選用：beta 站台及憑證對應的裸網域，例如 `beta-cms-api.me-pppmp.com`，須與 beta IP 一起設定 |
 | `CREATIVE_RELAY_ALLOWED_ORIGINS` | 必填：預覽頁的 HTTPS origin，以逗號分隔，不含路徑或結尾斜線；不可用 `*` |
 
-啟用時缺少或填錯設定會中止啟動，避免使用錯誤目的地。停用時設定可省略，整個路徑（含 OPTIONS）回覆 404。
+啟用時正式設定維持必填；beta 兩個變數皆省略時，只有 beta 路徑回覆 404。只填其中一個或設定無效會中止啟動，絕不改送正式 VM。共用開關停用時設定可省略，兩個路徑（含 OPTIONS）均回覆 404。兩個環境共用 `CREATIVE_RELAY_ALLOWED_ORIGINS`。
+
+若先前將 beta IP/hostname 填在原本兩個變數，升級前需把它們移至 `CREATIVE_RELAY_BETA_*`，原本兩個變數改填正式目的地，並將 beta template base 改成 `/api/v1/beta`。不要沿用 beta 目的地作為正式設定。
+
+Template 設定：
+
+```dotenv
+NEXT_PUBLIC_CMS_API_BASE_URL=https://realtime-api.me-pppmp.com/api/v1
+NEXT_PUBLIC_CMS_BETA_API_BASE_URL=https://realtime-api.me-pppmp.com/api/v1/beta
+```
+
+本次只修改轉發服務；template 設定需另外更新並重新建置部署。
 
 請求 JSON：`{"url":"https://素材網址", "role":"design7"}`。role 僅接受 `design7`、`it8` 或 null；省略/null 沿用 CMS 的業務確認。其他欄位拒絕；url 不超過 8192 字元，請求 body 上限 16 KiB。只接受 application/json。
 
@@ -138,9 +158,9 @@ env/bin/python -m uvicorn main:app --reload
 ### 部署前確認
 
 1. Cloud Run 使用同區域 VPC Direct egress，並僅將私人 IP 流量送至 VPC；確認子網有足夠可用 IP。
-2. Firewall 僅允許該 Cloud Run 子網來源至目標 cms VM TCP 443，允許規則優先於匹配的 deny；不要將整台 VM 或全部 Port 公開。
-3. 沿用既有公開 Load Balancer/網域；目前 Cloud Run ingress 限 internal + load balancing，瀏覽器不能直接使用停用的 run.app URL。確認負載平衡器/Armor允許新路徑 POST、OPTIONS，且此路徑不快取。
-4. 將實際預覽頁 origin 納入允許清單。預覽頁後續須將確認 API base 改為轉發服務的公開網域 `/api/v1`；本次不修改預覽頁。
+2. Firewall 僅允許該 Cloud Run 子網來源至各環境目標 cms VM TCP 443，允許規則優先於匹配的 deny；不要將整台 VM 或全部 Port 公開。
+3. 沿用既有公開 Load Balancer/網域；目前 Cloud Run ingress 限 internal + load balancing，瀏覽器不能直接使用停用的 run.app URL。確認負載平衡器/Armor允許兩個新路徑 POST、OPTIONS，且此路徑不快取。
+4. 將實際預覽頁 origin 納入允許清單。預覽頁確認 API base：正式為轉發服務的公開網域 `/api/v1`，beta 為 `/api/v1/beta`；本次不修改預覽頁。
 5. 先部署 beta 修訂版本再測試。從相同 Cloud Run 網路設定執行唯讀 HTTPS GET 至 CMS 已知路徑，使用內網 IP、正確 hostname/SNI 並驗證憑證，確認回覆的是正確 CMS。唯讀 GET 不可當成實際 POST 成功證據。
 6. 經授權才以隔離素材測 POST，確認成功與過期素材/錯誤角色/CORS/重複確認等結果。逾時可能代表 CMS 已完成寫入，使用者重試前應先確認狀態。
 

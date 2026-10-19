@@ -7,6 +7,7 @@ from app.api.finance import v1_router as finance_router
 from app.core.database import DatabaseSession
 from app.api.creative_relay import (
     PATH as CREATIVE_RELAY_PATH,
+    BETA_PATH as CREATIVE_RELAY_BETA_PATH,
     load_relay_settings,
     router as creative_relay_router,
 )
@@ -19,15 +20,16 @@ app = FastAPI(
 )
 
 app.state.creative_relay_settings = load_relay_settings()
+app.state.creative_relay_beta_settings = load_relay_settings("beta")
 app.add_middleware(
     PathCORSMiddleware,
-    path=CREATIVE_RELAY_PATH,
-    enabled=app.state.creative_relay_settings is not None,
-    allowed_origins=(
-        app.state.creative_relay_settings.origins
-        if app.state.creative_relay_settings is not None
-        else ()
-    ),
+    policies={
+        path: (settings is not None, settings.origins if settings else ())
+        for path, settings in (
+            (CREATIVE_RELAY_PATH, app.state.creative_relay_settings),
+            (CREATIVE_RELAY_BETA_PATH, app.state.creative_relay_beta_settings),
+        )
+    },
 )
 app.include_router(creative_relay_router)
 

@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 PATH = "/api/v1/creative/view"
+BETA_PATH = "/api/v1/beta/creative/view"
 MAX_REQUEST = 16 * 1024
 MAX_RESPONSE = 256 * 1024
 router = APIRouter()
@@ -27,21 +28,27 @@ class RelaySettings:
     origins: tuple[str, ...]
 
 
-def load_relay_settings() -> RelaySettings | None:
+def load_relay_settings(environment: Literal["production", "beta"] = "production") -> RelaySettings | None:
+    if environment not in ("production", "beta"):
+        raise ValueError("Unknown relay environment")
     if os.getenv("CREATIVE_RELAY_ENABLED", "false").lower() != "true":
         return None
-    ip = os.environ.get("CREATIVE_RELAY_PRIVATE_IP", "")
+    prefix = "CREATIVE_RELAY_BETA" if environment == "beta" else "CREATIVE_RELAY"
+    ip = os.environ.get(f"{prefix}_PRIVATE_IP", "")
+    hostname = os.environ.get(f"{prefix}_HOSTNAME", "")
+    # An unconfigured beta endpoint stays unavailable; never use production.
+    if environment == "beta" and not ip and not hostname:
+        return None
     address = ipaddress.IPv4Address(ip)
     if not any(address in ipaddress.ip_network(net) for net in (
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
     )):
-        raise ValueError("CREATIVE_RELAY_PRIVATE_IP must be an RFC1918 IPv4 address")
-    hostname = os.environ.get("CREATIVE_RELAY_HOSTNAME", "")
+        raise ValueError(f"{prefix}_PRIVATE_IP must be an RFC1918 IPv4 address")
     if len(hostname) > 253 or not re.fullmatch(
         r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
         r"[a-zA-Z](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", hostname
     ):
-        raise ValueError("CREATIVE_RELAY_HOSTNAME must be a bare DNS hostname")
+        raise ValueError(f"{prefix}_HOSTNAME must be a bare DNS hostname")
     origins = tuple(x.strip() for x in os.getenv("CREATIVE_RELAY_ALLOWED_ORIGINS", "").split(",") if x.strip())
     if not origins or any(not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::[0-9]+)?", x) for x in origins):
         raise ValueError("CREATIVE_RELAY_ALLOWED_ORIGINS requires HTTPS origins without paths")
@@ -110,8 +117,13 @@ def forward(settings: RelaySettings, payload: dict) -> JSONResponse:
 
 
 @router.post(PATH, include_in_schema=False)
+@router.post(BETA_PATH, include_in_schema=False)
 async def creative_view(request: Request):
-    settings = request.app.state.creative_relay_settings
+    settings_name = (
+        "creative_relay_beta_settings" if request.scope["path"] == BETA_PATH
+        else "creative_relay_settings"
+    )
+    settings = getattr(request.app.state, settings_name, None)
     if settings is None:
         raise HTTPException(404, "Not Found")
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
