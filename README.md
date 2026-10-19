@@ -95,12 +95,16 @@ STALE_WHILE_REVALIDATE_SECONDS=600
 啟動與測試：
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn main:app --reload
 # 執行包含 Cloud Run 擷取程式的測試時，另安裝擷取依賴
 .venv/bin/pip install -r requirements.txt -r cloudrun/requirements.txt
 .venv/bin/python -m unittest discover
+```
+
+```bash
+env/bin/python -m uvicorn main:app --reload
 ```
 
 - API 文件：`http://127.0.0.1:8000/docs`
@@ -112,3 +116,36 @@ python -m venv .venv
 現有網域與 External Application Load Balancer 可繼續沿用。短期可部署在既有 Managed Instance Group，但應改用固定版本 artifact、systemd 與 MIG rolling update，不再於 VM 開機時直接 `git pull`。較省維運的目標是把 Load Balancer backend 換成 Cloud Run serverless NEG；Cloud Run ingress 設為 `internal-and-cloud-load-balancing`，避免直接繞過 CDN/Armor。
 
 資料庫密碼已改由 Secret Manager 提供（見上方「資料擷取」）。完整研究與遷移清單見 [`docs/deployment-security-research.md`](docs/deployment-security-research.md)。
+
+
+## 素材確認轉發（預設關閉）
+
+選用的 `POST /api/v1/creative/view` 僅轉交確認紀錄；不會讀取或下載 `url` 指向的素材。既有 environment/finance GET 與 CORS 契約維持原樣。此入口不依賴 PostgreSQL，且不列入目前公開 GET API 的 OpenAPI 清單。
+
+| 環境變數 | 設定 |
+| --- | --- |
+| `CREATIVE_RELAY_ENABLED` | 預設 `false`；僅 `true` 啟用 |
+| `CREATIVE_RELAY_PRIVATE_IP` | 必填：目標 cms VM 的 RFC1918 IPv4，勿填公網 IP |
+| `CREATIVE_RELAY_HOSTNAME` | 必填：與該 VM Nginx 站台及有效憑證相符的裸網域，例如 `beta-cms-api.me-pppmp.com`，不含 scheme/path |
+| `CREATIVE_RELAY_ALLOWED_ORIGINS` | 必填：預覽頁的 HTTPS origin，以逗號分隔，不含路徑或結尾斜線；不可用 `*` |
+
+啟用時缺少或填錯設定會中止啟動，避免使用錯誤目的地。停用時設定可省略，整個路徑（含 OPTIONS）回覆 404。
+
+請求 JSON：`{"url":"https://素材網址", "role":"design7"}`。role 僅接受 `design7`、`it8` 或 null；省略/null 沿用 CMS 的業務確認。其他欄位拒絕；url 不超過 8192 字元，請求 body 上限 16 KiB。只接受 application/json。
+
+轉發固定使用 TCP 443 與 `/api/v1/creative/view`，私網 IP 負責 TCP 連線，設定的 hostname 同時用於 TLS SNI、憑證驗證及 Host，因此不需要修改 DNS。不讀取環境代理、不轉送客戶端 Cookie/Authorization/X-Forwarded-For、不跟隨重新導向、不自動重試寫入。TLS/連線逾時 5 秒，連線後讀寫閒置逾時 10 秒，上游 JSON 上限 256 KiB。正常 JSON 與 HTTP 狀態原樣回傳（包含 CMS 404/409/422/429）；網路或格式錯誤回覆 502、逾時回覆 504。此路徑所有回覆皆 `Cache-Control: no-store`，不轉發上游 cookies/redirect headers，不記錄完整素材 URL/body。
+
+### 部署前確認
+
+1. Cloud Run 使用同區域 VPC Direct egress，並僅將私人 IP 流量送至 VPC；確認子網有足夠可用 IP。
+2. Firewall 僅允許該 Cloud Run 子網來源至目標 cms VM TCP 443，允許規則優先於匹配的 deny；不要將整台 VM 或全部 Port 公開。
+3. 沿用既有公開 Load Balancer/網域；目前 Cloud Run ingress 限 internal + load balancing，瀏覽器不能直接使用停用的 run.app URL。確認負載平衡器/Armor允許新路徑 POST、OPTIONS，且此路徑不快取。
+4. 將實際預覽頁 origin 納入允許清單。預覽頁後續須將確認 API base 改為轉發服務的公開網域 `/api/v1`；本次不修改預覽頁。
+5. 先部署 beta 修訂版本再測試。從相同 Cloud Run 網路設定執行唯讀 HTTPS GET 至 CMS 已知路徑，使用內網 IP、正確 hostname/SNI 並驗證憑證，確認回覆的是正確 CMS。唯讀 GET 不可當成實際 POST 成功證據。
+6. 經授權才以隔離素材測 POST，確認成功與過期素材/錯誤角色/CORS/重複確認等結果。逾時可能代表 CMS 已完成寫入，使用者重試前應先確認狀態。
+
+這是匿名確認 API 的轉接；CORS 不是授權，知道連結者仍可能提交或轉傳不同角色的確認。需要身分/角色保證時須另行實作簽名 Token 或登入；此功能不宣稱解決該問題。公開入口應沿用既有流量限制/監控，不在程式中加入只對單一 instance 生效的假性限流。
+
+回復方式：將 `CREATIVE_RELAY_ENABLED=false` 並部署新修訂，或切回前一版；預覽頁同時切回原 API base。確認沒有其他用途後再移除新增的 Firewall 規則與 VPC 設定。不要移除共用現有設定。
+
+本機測試：`env/bin/python -m unittest tests.test_creative_relay`。mock 測試不證明線上 VPC、Firewall、TLS、Load Balancer 或真實素材資料可用；需依上述步驟分別驗證。本次未部署、未提交任何素材確認、未更動 GCP。

@@ -1,11 +1,16 @@
 from fastapi import FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.environment import v1_router
 from app.api.finance import v1_router as finance_router
 from app.core.database import DatabaseSession
+from app.api.creative_relay import (
+    PATH as CREATIVE_RELAY_PATH,
+    load_relay_settings,
+    router as creative_relay_router,
+)
+from app.middleware.path_cors import PathCORSMiddleware
 
 app = FastAPI(
     title="Realtime API for PPPMP ads",
@@ -13,13 +18,19 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.state.creative_relay_settings = load_relay_settings()
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET"],
-    allow_headers=["Accept", "Content-Type"],
+    PathCORSMiddleware,
+    path=CREATIVE_RELAY_PATH,
+    enabled=app.state.creative_relay_settings is not None,
+    allowed_origins=(
+        app.state.creative_relay_settings.origins
+        if app.state.creative_relay_settings is not None
+        else ()
+    ),
 )
+app.include_router(creative_relay_router)
+
 
 app.include_router(v1_router)
 app.include_router(finance_router)
